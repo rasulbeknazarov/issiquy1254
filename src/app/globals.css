@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #111115;
+  color: #e5e5ea;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Slider thumb styling */
+input[type="range"] {
+  @apply h-2 rounded-full appearance-none bg-basalt-800 cursor-pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  @apply appearance-none w-5 h-5 rounded-full bg-white shadow-md cursor-pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  @apply w-5 h-5 rounded-full bg-white shadow-md cursor-pointer border-0;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #41414b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #5d5d6c;
+}
+
+/* Select dropdown */
+select option {
+  background: #1a1a1f;
+  color: #e5e5ea;
+}

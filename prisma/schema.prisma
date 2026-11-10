@@ -1,0 +1,210 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  AUDITOR
+  INSTALLER_CREW
+  THERMOPLUS_ADMIN
+}
+
+enum BuildingType {
+  MAHALLA_HOME
+  KHIVA_BOUTIQUE_HOTEL
+  XORAZM_GREENHOUSE
+  COMMERCIAL_WAREHOUSE
+  MULTI_STORY_APARTMENT
+  SCHOOL_CLINIC
+}
+
+enum ScannerType {
+  FLIR_ONE_PRO
+  FLIR_EDGE_PRO
+  DJI_MAVIC_3T
+}
+
+enum OrderStatus {
+  PENDING_CONSIGNMENT
+  KITTING_IN_PROGRESS
+  READY_FOR_DELIVERY
+  IN_TRANSIT
+  DELIVERED
+  INSTALLED
+  VERIFIED_THERMAL_RESCAN
+  COMPLETED
+  CANCELLED
+}
+
+enum MilkRunStatus {
+  PLANNING
+  LOADING_AT_CHINOBOD
+  EN_ROUTE
+  DELIVERING
+  COLLECTING_OFFCUTS
+  RETURNED_TO_FACTORY
+  COMPLETED
+}
+
+// ─── NextAuth.js Standard Tables ─────────────────────────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── Core User ───────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  role          UserRole  @default(CUSTOMER)
+  phone         String?
+  region        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  audits        ThermalAudit[]
+  orders        RetrofitOrder[]
+  assignedRoutes MilkRunRoute[] @relation("DriverRoutes")
+}
+
+// ─── Thermal Audit ("Heat Loss Passport") ────────────────────────
+
+model ThermalAudit {
+  id                   String       @id @default(cuid())
+  userId               String
+  buildingType         BuildingType
+  scannerUsed          ScannerType
+  address              String
+  city                 String
+  region               String
+  wallAreaM2           Float
+  roofAreaM2           Float
+  wallInsulationCm     Float        @default(6)
+  roofInsulationCm     Float        @default(10)
+  heatLossBeforeMWh    Float
+  heatLossAfterMWh     Float
+  reductionPercent     Float
+  gasSavedM3PerYear    Float
+  co2SavedKgPerYear    Float
+  paybackMonths        Float
+  auditFeeUZS          Float
+  auditFeeRebated      Boolean      @default(false)
+  thermalImageUrl      String?
+  pdfReportUrl         String?
+  notes                String?      @db.Text
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  user                 User         @relation(fields: [userId], references: [id])
+  order                RetrofitOrder?
+}
+
+// ─── Retrofit Order (14-day Consignment Tracking) ────────────────
+
+model RetrofitOrder {
+  id                     String      @id @default(cuid())
+  auditId                String      @unique
+  userId                 String
+  status                 OrderStatus @default(PENDING_CONSIGNMENT)
+
+  standartPacks          Int         @default(0)
+  standartTons           Float       @default(0)
+  facadeComfortPacks     Int         @default(0)
+  facadeComfortTons      Float       @default(0)
+  sandwichPacks          Int         @default(0)
+  sandwichTons           Float       @default(0)
+  fiberKg                Float       @default(0)
+
+  accessoryKitPrice      Float       @default(0)
+  materialCostUSD        Float       @default(0)
+  kittingMarginUSD       Float       @default(0)
+  installationFeeUSD     Float       @default(0)
+  logisticsFeeUSD        Float       @default(0)
+  totalPriceUSD          Float       @default(0)
+  startupProfitUSD       Float       @default(0)
+
+  consignmentDeadline    DateTime?
+  consignmentPaidAt      DateTime?
+
+  brigadeId              String?
+  brigadeName            String?
+  installStartDate       DateTime?
+  installEndDate         DateTime?
+  beforeThermalImageUrl  String?
+  afterThermalImageUrl   String?
+  verifiedZeroColdBridge Boolean     @default(false)
+
+  milkRunRouteId         String?
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  audit                  ThermalAudit @relation(fields: [auditId], references: [id])
+  user                   User         @relation(fields: [userId], references: [id])
+  milkRunRoute           MilkRunRoute? @relation(fields: [milkRunRouteId], references: [id])
+}
+
+// ─── Milk-Run Logistics & Ecology ────────────────────────────────
+
+model MilkRunRoute {
+  id                   String        @id @default(cuid())
+  routeName            String
+  driverId             String?
+  status               MilkRunStatus @default(PLANNING)
+  departureDate        DateTime?
+  departureLocation    String        @default("Chinobod Street 2E, Urgench")
+  stops                String[]
+  totalDistanceKm      Float         @default(0)
+  totalWeightTons      Float         @default(0)
+  offcutsCollectedKg   Float         @default(0)
+  offcutsRecycledKg    Float         @default(0)
+  co2AvoidedKg         Float         @default(0)
+  completedAt          DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  driver               User?         @relation("DriverRoutes", fields: [driverId], references: [id])
+  orders               RetrofitOrder[]
+}
