@@ -15,13 +15,69 @@ export const THERMAL_CONSTANTS = {
   co2PerM3Gas: 1.88, // kg CO2 per m³ natural gas
   wallInsulationCm: 6,
   roofInsulationCm: 10,
+  // Share of envelope heat loss attributed to each surface before retrofit.
+  wallHeatLossShare: 0.45,
+  roofHeatLossShare: 0.55,
 } as const;
+
+// ─── Bounded R-value Reduction Curve ─────────────────────────────
+
+/** Thermal resistance of a basalt wool layer, m²·°C/W (R = d / λ). */
+function insulationRValue(thicknessCm: number): number {
+  const cm = Number.isFinite(thicknessCm) ? Math.max(0, thicknessCm) : 0;
+  return cm / 100 / THERMAL_CONSTANTS.basaltConductivity;
+}
+
+/**
+ * Baseline (uninsulated) envelope resistance R₀, solved so that the reference
+ * retrofit (6 cm wall + 10 cm roof) yields exactly the study's 80.6% drop:
+ *
+ *   share_w·Rw/(Rw+R₀) + share_r·Rr/(Rr+R₀) = T
+ *
+ * which rearranges to the quadratic
+ *   T·R₀² + (T·(Rw+Rr) − a − b)·R₀ + (T·Rw·Rr − a·Rr − b·Rw) = 0
+ * with a = share_w·Rw, b = share_r·Rr. The positive root is ≈ 0.469 m²·°C/W,
+ * a realistic value for an uninsulated brick wall.
+ */
+const BASELINE_R_VALUE = (() => {
+  const T = THERMAL_CONSTANTS.reductionPercent / 100;
+  const Rw = insulationRValue(THERMAL_CONSTANTS.wallInsulationCm);
+  const Rr = insulationRValue(THERMAL_CONSTANTS.roofInsulationCm);
+  const a = THERMAL_CONSTANTS.wallHeatLossShare * Rw;
+  const b = THERMAL_CONSTANTS.roofHeatLossShare * Rr;
+  const qb = T * (Rw + Rr) - a - b;
+  const qc = T * Rw * Rr - a * Rr - b * Rw;
+  return (-qb + Math.sqrt(qb * qb - 4 * T * qc)) / (2 * T);
+})();
+
+/**
+ * Fraction of baseline heat loss removed by the retrofit, always in [0, 1).
+ *   0 cm / 0 cm  → 0      (after == before, never Infinity/NaN)
+ *   6 cm / 10 cm → 0.806  (study reference)
+ * Adding insulation can only ever reduce heat loss; wall-only and roof-only
+ * retrofits are handled independently.
+ */
+export function envelopeReductionFraction(
+  wallInsulationCm: number,
+  roofInsulationCm: number
+): number {
+  const Rw = insulationRValue(wallInsulationCm);
+  const Rr = insulationRValue(roofInsulationCm);
+  return (
+    (THERMAL_CONSTANTS.wallHeatLossShare * Rw) / (Rw + BASELINE_R_VALUE) +
+    (THERMAL_CONSTANTS.roofHeatLossShare * Rr) / (Rr + BASELINE_R_VALUE)
+  );
+}
 
 // ─── Thermo Plus Product Catalog ─────────────────────────────────
 
 export interface ThermoPlusProduct {
   sku: string;
   name: string;
+  /** What the product physically is — Thermo Plus makes no EPS/foam boards. */
+  material: string;
+  /** Reaction-to-fire class, or null where A1/NG does not apply (polymer fiber). */
+  fireClass: string | null;
   application: string;
   densityKgM3: number;
   thicknessCm: number;
@@ -30,10 +86,17 @@ export interface ThermoPlusProduct {
   pricePerPackUSD: number;
 }
 
+const BASALT_STONE_WOOL = "Basalt stone wool (kamennaya vata) from Karatau basalt rock";
+const FIRE_CLASS_A1 = "A1 / NG — non-combustible";
+
 export const THERMO_PLUS_CATALOG: Record<string, ThermoPlusProduct> = {
   STANDART: {
     sku: "TP-STD-100",
+    // "Standart" (with a t) is the official Thermo Plus brand spelling, which
+    // is why fields such as standartPacks / standartTons are spelled that way.
     name: "Thermo Plus Standart",
+    material: BASALT_STONE_WOOL,
+    fireClass: FIRE_CLASS_A1,
     application: "Roofs, attics, ceilings, floors (10 cm)",
     densityKgM3: 35,
     thicknessCm: 10,
@@ -44,6 +107,8 @@ export const THERMO_PLUS_CATALOG: Record<string, ThermoPlusProduct> = {
   FACADE_COMFORT: {
     sku: "TP-FC-060",
     name: "Thermo Plus Facade Comfort",
+    material: BASALT_STONE_WOOL,
+    fireClass: FIRE_CLASS_A1,
     application: "Exterior walls & facades (6 cm)",
     densityKgM3: 135,
     thicknessCm: 6,
@@ -54,6 +119,8 @@ export const THERMO_PLUS_CATALOG: Record<string, ThermoPlusProduct> = {
   SANDWICH: {
     sku: "TP-SAN-080",
     name: "Thermo Plus Sandwich / Technical",
+    material: BASALT_STONE_WOOL,
+    fireClass: FIRE_CLASS_A1,
     application: "Pipelines, boilers, sandwich panels",
     densityKgM3: 100,
     thicknessCm: 8,
@@ -64,6 +131,8 @@ export const THERMO_PLUS_CATALOG: Record<string, ThermoPlusProduct> = {
   PP_FIBER: {
     sku: "TP-FIB-PP",
     name: "Thermo Plus Polypropylene Fiber",
+    material: "Polypropylene / polyethylene fiber (mortar reinforcement)",
+    fireClass: null, // polymer additive embedded in mortar — not an A1 insulation product
     application: "Facade mortar reinforcement (0.9 kg/m³ of mortar)",
     densityKgM3: 910,
     thicknessCm: 0,
@@ -302,25 +371,26 @@ export function calculateIssiqUyAudit(input: AuditInput): AuditResult {
 
   // ── Thermal Physics ────────────────────────────────────────────
 
-  const wallInsulationFactor = input.wallInsulationCm / THERMAL_CONSTANTS.wallInsulationCm;
-  const roofInsulationFactor = input.roofInsulationCm / THERMAL_CONSTANTS.roofInsulationCm;
-  const avgInsulationFactor = (wallInsulationFactor + roofInsulationFactor) / 2;
-
-  const heatLossBeforeMWh = round(THERMAL_CONSTANTS.referenceHeatLossBefore * areaScaleFactor, 1);
-  const heatLossAfterMWh = round(
-    THERMAL_CONSTANTS.referenceHeatLossAfter * areaScaleFactor / avgInsulationFactor,
-    1
+  const reductionFraction = envelopeReductionFraction(
+    input.wallInsulationCm,
+    input.roofInsulationCm
   );
 
-  const reductionPercent = round(
-    ((heatLossBeforeMWh - heatLossAfterMWh) / heatLossBeforeMWh) * 100,
-    1
-  );
+  const rawHeatLossBefore = THERMAL_CONSTANTS.referenceHeatLossBefore * areaScaleFactor;
+  const heatLossBeforeMWh = round(rawHeatLossBefore, 1);
+  const heatLossAfterMWh = round(rawHeatLossBefore * (1 - reductionFraction), 1);
+  const reductionPercent = round(reductionFraction * 100, 1);
 
-  const gasSavedM3PerYear = round(THERMAL_CONSTANTS.gasSavedM3PerYear * areaScaleFactor, 0);
+  // The study's savings figures (gas, primary energy, peak load) belong to the
+  // reference 80.6% retrofit, so scale them by how much of that reduction this
+  // configuration actually achieves. 0 cm of insulation → 0 savings.
+  const savingsScale =
+    areaScaleFactor * (reductionFraction / (THERMAL_CONSTANTS.reductionPercent / 100));
+
+  const gasSavedM3PerYear = round(THERMAL_CONSTANTS.gasSavedM3PerYear * savingsScale, 0);
   const co2SavedKgPerYear = round(gasSavedM3PerYear * THERMAL_CONSTANTS.co2PerM3Gas, 0);
-  const primaryEnergySavedMWh = round(THERMAL_CONSTANTS.primaryEnergySaved * areaScaleFactor, 1);
-  const peakLoadReductionKW = round(THERMAL_CONSTANTS.peakHeatingLoadReduction * areaScaleFactor, 1);
+  const primaryEnergySavedMWh = round(THERMAL_CONSTANTS.primaryEnergySaved * savingsScale, 1);
+  const peakLoadReductionKW = round(THERMAL_CONSTANTS.peakHeatingLoadReduction * savingsScale, 1);
 
   const thermal: ThermalResult = {
     heatLossBeforeMWh,

@@ -4,6 +4,12 @@ import { prisma } from "@/lib/prisma";
 import type { NextAuthOptions } from "next-auth";
 import type { UserRole } from "@prisma/client";
 
+const THERMOPLUS_DOMAIN = "@thermoplus.uz";
+
+function isThermoPlusEmail(email?: string | null): boolean {
+  return !!email && email.toLowerCase().endsWith(THERMOPLUS_DOMAIN);
+}
+
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
   providers: [
@@ -17,14 +23,45 @@ export const authOptions: NextAuthOptions = {
     maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   callbacks: {
-    async jwt({ token, user, trigger, session }) {
+    // NOTE: signIn runs BEFORE PrismaAdapter inserts a new User row, so it
+    // must not touch the database for the signing-in user. Role promotion
+    // lives in events.createUser and callbacks.jwt instead.
+    async signIn() {
+      return true;
+    },
+    async jwt({ token, user, trigger }) {
       if (user) {
-        token.role = user.role as UserRole;
+        // Initial sign-in: the User row exists by now (created by the adapter
+        // just before this callback for first-time users).
         token.id = user.id;
+        token.role = user.role as UserRole;
+
+        if (isThermoPlusEmail(user.email)) {
+          // Set the role on the token immediately so the very first session
+          // is already an admin session, and make sure the DB agrees (covers
+          // users created before this rule existed). updateMany never throws
+          // when no row matches.
+          token.role = "THERMOPLUS_ADMIN";
+          if (user.role !== "THERMOPLUS_ADMIN") {
+            await prisma.user.updateMany({
+              where: { id: user.id },
+              data: { role: "THERMOPLUS_ADMIN" },
+            });
+          }
+        }
       }
 
-      if (trigger === "update" && session?.role) {
-        token.role = session.role as UserRole;
+      if (trigger === "update" && token.id) {
+        // SECURITY: the payload of a client-side session update() is
+        // attacker-controlled, so never copy a role from it. Re-read the
+        // authoritative role from the database instead.
+        const dbUser = await prisma.user.findUnique({
+          where: { id: token.id },
+          select: { role: true },
+        });
+        if (dbUser) {
+          token.role = dbUser.role;
+        }
       }
 
       return token;
@@ -36,14 +73,17 @@ export const authOptions: NextAuthOptions = {
       }
       return session;
     },
-    async signIn({ user }) {
-      if (user.email?.endsWith("@thermoplus.uz")) {
+  },
+  events: {
+    // Fires right after PrismaAdapter creates the User row, so the update
+    // below can never hit Prisma P2025 (record not found).
+    async createUser({ user }) {
+      if (isThermoPlusEmail(user.email)) {
         await prisma.user.update({
-          where: { email: user.email },
+          where: { id: user.id },
           data: { role: "THERMOPLUS_ADMIN" },
         });
       }
-      return true;
     },
   },
   pages: {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { isStaff, parsePagination } from "@/lib/api-utils";
 import {
   AuditInputSchema,
   calculateIssiqUyAudit,
@@ -14,13 +15,10 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-  const limit = parseInt(searchParams.get("limit") || "20", 10);
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  const { limit, offset } = parsePagination(searchParams);
 
-  const where =
-    session.user.role === "THERMOPLUS_ADMIN" || session.user.role === "AUDITOR"
-      ? {}
-      : { userId: session.user.id };
+  // Staff see every audit; customers only their own.
+  const where = isStaff(session.user.role) ? {} : { userId: session.user.id };
 
   const [audits, total] = await Promise.all([
     prisma.thermalAudit.findMany({
@@ -45,7 +43,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await request.json();
+  const body = await request.json().catch(() => null);
   const parsed = AuditInputSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(

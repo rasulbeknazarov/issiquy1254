@@ -1,13 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { OrderStatus, type Prisma } from "@prisma/client";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import { REVENUE_MODEL } from "@/lib/thermal-physics";
+import { isStaff, parsePagination } from "@/lib/api-utils";
+import {
+  AuditInputSchema,
+  REVENUE_MODEL,
+  calculateIssiqUyAudit,
+} from "@/lib/thermal-physics";
 
 const CreateOrderSchema = z.object({
   auditId: z.string().cuid(),
 });
+
+const OrderStatusSchema = z.nativeEnum(OrderStatus);
 
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -16,16 +24,26 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-  const limit = parseInt(searchParams.get("limit") || "20", 10);
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
-  const status = searchParams.get("status") || undefined;
+  const { limit, offset } = parsePagination(searchParams);
 
-  const where: Record<string, unknown> = {};
-  if (session.user.role !== "THERMOPLUS_ADMIN" && session.user.role !== "AUDITOR") {
+  const where: Prisma.RetrofitOrderWhereInput = {};
+
+  // Staff (THERMOPLUS_ADMIN / AUDITOR) may read every order; everyone else is
+  // confined to their own.
+  if (!isStaff(session.user.role)) {
     where.userId = session.user.id;
   }
-  if (status) {
-    where.status = status;
+
+  const statusParam = searchParams.get("status");
+  if (statusParam) {
+    const status = OrderStatusSchema.safeParse(statusParam);
+    if (!status.success) {
+      return NextResponse.json(
+        { error: `Invalid status. Expected one of: ${Object.values(OrderStatus).join(", ")}` },
+        { status: 400 }
+      );
+    }
+    where.status = status.data;
   }
 
   const [orders, total] = await Promise.all([
@@ -60,7 +78,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await request.json();
+  const body = await request.json().catch(() => null);
   const parsed = CreateOrderSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -74,7 +92,9 @@ export async function POST(request: NextRequest) {
     include: { order: true },
   });
 
-  if (!audit) {
+  // Customers may only order against their own audits. Respond 404 (not 403)
+  // so audit IDs belonging to other customers cannot be probed.
+  if (!audit || (audit.userId !== session.user.id && !isStaff(session.user.role))) {
     return NextResponse.json({ error: "Audit not found" }, { status: 404 });
   }
 
@@ -85,7 +105,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { calculateIssiqUyAudit, AuditInputSchema } = await import("@/lib/thermal-physics");
   const auditInput = AuditInputSchema.parse({
     buildingType: audit.buildingType,
     scannerType: audit.scannerUsed,
@@ -95,7 +114,7 @@ export async function POST(request: NextRequest) {
     roofInsulationCm: audit.roofInsulationCm,
     address: audit.address,
     city: audit.city,
-    region: "Xorazm",
+    region: audit.region,
   });
 
   const result = calculateIssiqUyAudit(auditInput);
@@ -122,7 +141,9 @@ export async function POST(request: NextRequest) {
     return tx.retrofitOrder.create({
       data: {
         auditId: audit.id,
-        userId: session.user.id,
+        // The order belongs to the audit's owner, even when a staff member
+        // places it on the customer's behalf.
+        userId: audit.userId,
         standartPacks: result.materials.standartPacks,
         standartTons: result.materials.standartTons,
         facadeComfortPacks: result.materials.facadeComfortPacks,

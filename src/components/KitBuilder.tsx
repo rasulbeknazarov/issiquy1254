@@ -10,6 +10,7 @@ import {
   ShoppingCart,
   CheckCircle,
   Factory,
+  ShieldCheck,
 } from "lucide-react";
 import {
   calculateIssiqUyAudit,
@@ -46,6 +47,10 @@ export default function KitBuilder() {
     [buildingType, wallAreaM2, roofAreaM2]
   );
 
+  // Every insulation SKU here is Thermo Plus basalt stone wool (kamennaya
+  // vata), fire class A1 / NG. Thermo Plus makes no EPS or foam boards.
+  // `standartPacks` / `standartTons` are spelled with a "t" on purpose: they
+  // mirror the official brand name "Thermo Plus Standart".
   const products = [
     {
       sku: THERMO_PLUS_CATALOG.STANDART,
@@ -169,6 +174,19 @@ export default function KitBuilder() {
         </div>
       </div>
 
+      {/* Material & fire-safety banner */}
+      <div className="bg-green-900/20 border border-green-700/30 rounded-xl px-5 py-3 flex items-start gap-3">
+        <ShieldCheck className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
+        <p className="text-sm text-basalt-300">
+          <span className="text-green-300 font-medium">
+            100% non-combustible basalt stone wool (class A1 / NG).
+          </span>{" "}
+          Thermo Plus Standart, Facade Comfort and Sandwich / Technical are made from
+          Karatau basalt rock at the Urgench plant. Facade mortar is reinforced with
+          Thermo Plus polypropylene / polyethylene fiber.
+        </p>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Product Cards */}
         {products.map((p) => (
@@ -183,7 +201,14 @@ export default function KitBuilder() {
               </div>
               <Boxes className={`h-6 w-6 ${p.color}`} />
             </div>
-            <p className="text-xs text-basalt-400 mb-3">{p.sku.application}</p>
+            <p className="text-xs text-basalt-300">{p.sku.material}</p>
+            {p.sku.fireClass && (
+              <p className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-green-700/40 bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-300">
+                <ShieldCheck className="h-3 w-3" />
+                Fire class {p.sku.fireClass}
+              </p>
+            )}
+            <p className="text-xs text-basalt-400 mt-2 mb-3">{p.sku.application}</p>
             <div className="space-y-1.5 text-sm">
               <div className="flex justify-between text-basalt-300">
                 <span>Coverage Area</span>
